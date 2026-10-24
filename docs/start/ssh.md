@@ -58,21 +58,59 @@ adb shell
 mount -o remount,rw /
 cat > /etc/init.d/S99zdropbear <<'EOF'
 #!/bin/sh
-# Autostart dropbear SSH on :2222 (delete this file to remove).
 DB=/data/opt/bin/dropbear
-HK=/data/opt/etc/dropbear/hk_ed25519
-LOG=/data/opt/etc/dropbear/dropbear.log
-case "$1" in
-  start)
-    if [ -x "$DB" ] && [ -f "$HK" ]; then
-      pidof dropbear >/dev/null 2>&1 || "$DB" -r "$HK" -p 2222 -E 2>>"$LOG"
+KEYGEN=/data/opt/bin/dropbearkey
+DIR=/data/opt/etc/dropbear
+KEY=$DIR/hk_ed25519
+LOG=$DIR/dropbear.log
+start() {
+    mkdir -p "$DIR"
+    if [ ! -x "$DB" ]; then
+        echo "ERROR: Dropbear binary not found: $DB" >> "$LOG"
+        return 1
     fi
-    ;;
-  stop)
-    killall dropbear 2>/dev/null
-    ;;
+    if [ ! -f "$KEY" ]; then
+        if [ ! -x "$KEYGEN" ]; then
+            echo "ERROR: dropbearkey not found: $KEYGEN" >> "$LOG"
+            return 1
+        fi
+        "$KEYGEN" -t ed25519 -f "$KEY" >> "$LOG" 2>&1
+        if [ $? -ne 0 ] || [ ! -s "$KEY" ]; then
+            echo "ERROR: Host key generation failed" >> "$LOG"
+            return 1
+        fi
+        chmod 600 "$KEY"
+    fi
+    if pidof dropbear >/dev/null 2>&1; then
+        echo "Dropbear already running" >> "$LOG"
+        return 0
+    fi
+    echo "Starting Dropbear on port 2222" >> "$LOG"
+
+    "$DB" -p 2222 -r "$KEY" -B \
+        >> "$LOG" 2>&1 </dev/null &
+    RC=$?
+    if [ "$RC" -ne 0 ]; then
+        echo "ERROR: Dropbear exited with code $RC" >> "$LOG"
+        return "$RC"
+    fi
+}
+case "$1" in
+    start) start ;;
+    stop)
+        killall dropbear 2>/dev/null
+        ;;
+    restart)
+        killall dropbear 2>/dev/null
+        sleep 1
+        start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
 esac
-exit 0
+exit $?
 EOF
 chmod +x /etc/init.d/S99zdropbear
 sync; mount -o remount,ro /
